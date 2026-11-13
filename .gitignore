@@ -1,0 +1,15 @@
+node_modules/
+out/
+dist/
+*.log
+.DS_Store
+
+# engine build output (regenerated from engine/vendor + engine/patches)
+engine/work/
+
+# engine update trials (engine/build/check-updates.mjs)
+engine/candidate/
+
+# packaging output
+release/
+engine/stage/

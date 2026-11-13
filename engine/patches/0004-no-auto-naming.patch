@@ -1,0 +1,25 @@
+# Agent Crew patch 0004: no automatic branch or workspace naming.
+# - Upstream renames a new worktree's branch (and names directory workspaces) from the first message, replacing the
+#   branch the creator asked for and possibly starting a hidden model call on the user's plan.
+# - Agent Crew names branches itself (crew/<robot>-<task>), so scheduling a rename is now a no-op.
+# Modified by Agent Crew (Apache-2.0 section 4b).
+
+diff --git a/packages/server/src/server/workspace-auto-name.ts b/packages/server/src/server/workspace-auto-name.ts
+index c4910ee..5c29128 100644
+--- a/packages/server/src/server/workspace-auto-name.ts
++++ b/packages/server/src/server/workspace-auto-name.ts
+@@ -212,10 +212,9 @@ export class WorkspaceAutoName {
+   }
+ 
+   private schedule(run: () => Promise<void>, context: { cwd: string; message: string }): void {
+-    setTimeout(() => {
+-      void run().catch((error) => {
+-        this.logger.warn({ err: error, cwd: context.cwd }, context.message);
+-      });
+-    }, 0);
++    // Agent Crew: no automatic branch or workspace naming. Agent Crew names branches itself (crew/<robot>-<task>),
++    // and naming can start a hidden model call on the user's plan.
++    void run;
++    this.logger.debug({ cwd: context.cwd }, "Automatic workspace naming is disabled in Agent Crew");
+   }
+ }

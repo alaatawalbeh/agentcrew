@@ -1,0 +1,41 @@
+# Packaging for personal use only: an AppImage for this machine (Linux x64). Not for distribution until Anthropic has
+# said a Pro/Max-signed-in app like this is fine to share (see README).
+#   npm run package     (builds the app, stages the engine, writes release/Agent-Crew-<version>-x86_64.AppImage)
+appId: app.agentcrew.desktop
+productName: Agent Crew
+executableName: agent-crew
+copyright: Personal build, not for distribution.
+directories:
+  output: release
+  buildResources: resources
+files:
+  - out/**
+  - package.json
+asar: true
+# The engine runs as its own process, so it lives outside the asar archive: engine/stage → resources/engine, copied
+# by this hook (electron-builder's extraResources would leave out its node_modules).
+afterPack: scripts/after-pack.cjs
+npmRebuild: false
+# Electron's build-time switches: no running the binary as plain Node, no NODE_OPTIONS or --inspect, only the app's
+# own asar archive loads, and file:// gets no extra privileges.
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  grantFileProtocolExtraPrivileges: false
+# The newer static AppImage runtime: it works with FUSE 3, so it runs on Ubuntu 24.04+ without installing libfuse2.
+toolsets:
+  appimage: '1.0.3'
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+  category: Development
+  icon: resources/icon.png
+  synopsis: A control room for a crew of Claude Code agents
+  syncDesktopName: true
+  artifactName: Agent-Crew-${version}-${arch}.${ext}
+publish: null

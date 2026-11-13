@@ -1,0 +1,105 @@
+# Agent Crew patch 0002: the Claude provider can never skip permissions, and a repo can't grant itself powers.
+# - "bypassPermissions" is no longer a valid mode, so creating an agent in it or switching to it is rejected.
+# - The SDK is launched with allowDangerouslySkipPermissions: false.
+# - providerOptions.extraArgs is never forwarded: raw CLI flags would allow anything, --dangerously-skip-permissions included.
+# - Only the user's own Claude settings load, unless the agent is created with providerOptions.trustProjectSettings
+#   (Agent Crew sets it only for repos the user has marked trusted). Upstream always loaded the repo's
+#   .claude/settings*.json, including its hooks and allow rules.
+# Modified by Agent Crew (Apache-2.0 section 4b).
+
+diff --git a/packages/server/src/server/agent/providers/claude/agent.ts b/packages/server/src/server/agent/providers/claude/agent.ts
+index d232185..537e986 100644
+--- a/packages/server/src/server/agent/providers/claude/agent.ts
++++ b/packages/server/src/server/agent/providers/claude/agent.ts
+@@ -154,11 +154,23 @@ import { execCommand } from "../../../../utils/spawn.js";
+ import { composeSystemPromptParts } from "../../system-prompt.js";
+ 
+ const fsPromises = promises;
+-const CLAUDE_SETTING_SOURCES: NonNullable<ClaudeOptions["settingSources"]> = [
++// Agent Crew: a repo's own .claude/settings*.json (hooks, allow rules) and CLAUDE.md only load once the user has
++// marked that repo trusted (providerOptions.trustProjectSettings). Until then only the user's own settings apply.
++const CLAUDE_SETTING_SOURCES_TRUSTED: NonNullable<ClaudeOptions["settingSources"]> = [
+   "user",
+   "project",
+   "local",
+ ];
++const CLAUDE_SETTING_SOURCES_UNTRUSTED: NonNullable<ClaudeOptions["settingSources"]> = ["user"];
++
++/** Agent Crew: options that are never forwarded to the Claude SDK as they are. */
++function withoutAgentCrewControlledOptions(options: ClaudeProviderOptions): ClaudeProviderOptions {
++  const forwarded = { ...options };
++  // Raw CLI flags would allow anything, --dangerously-skip-permissions included.
++  delete forwarded.extraArgs;
++  delete forwarded.trustProjectSettings;
++  return forwarded;
++}
+ 
+ function readNonEmptyString(value: unknown): string | null {
+   return typeof value === "string" && value.trim().length > 0 ? value : null;
+@@ -403,11 +415,8 @@ const DEFAULT_MODES: AgentMode[] = [
+     label: "Auto mode",
+     description: "Uses a model classifier to review permission prompts automatically",
+   },
+-  {
+-    id: "bypassPermissions",
+-    label: "Bypass",
+-    description: "Skip all permission prompts (use with caution)",
+-  },
++  // Agent Crew: no "bypassPermissions" mode. Leaving it out of this list makes agent creation and every mode switch
++  // reject it as an invalid mode.
+ ];
+ 
+ const VALID_CLAUDE_MODES = new Set(DEFAULT_MODES.map((mode) => mode.id));
+@@ -3654,10 +3663,10 @@ class ClaudeAgentSession implements AgentSession {
+   private async buildOptions(permissionMode: PermissionMode): Promise<ClaudeOptions> {
+     const { thinking, effort, ultracode } = this.resolveThinkingConfig();
+     const appendedSystemPrompt = this.buildAppendedSystemPrompt();
+-    const providerOptions = applyClaudeToolPolicy(
+-      this.config.providerOptions,
+-      this.config.toolPolicy,
++    const providerOptions = withoutAgentCrewControlledOptions(
++      applyClaudeToolPolicy(this.config.providerOptions, this.config.toolPolicy),
+     );
++    const trustProjectSettings = this.config.providerOptions?.trustProjectSettings === true;
+     const settingsOptions = await this.buildSettingsOptions(providerOptions, { ultracode });
+     const sdkEnv = this.harnessEnvironment;
+     assertClaudeModeCanRun(permissionMode, sdkEnv);
+@@ -3684,10 +3693,8 @@ class ClaudeAgentSession implements AgentSession {
+       cwd: this.config.cwd,
+       includePartialMessages: true,
+       permissionMode,
+-      // Dynamic mode switching can recreate the underlying Claude query. Keep the
+-      // bypass launch capability available so later setPermissionMode("bypassPermissions")
+-      // calls do not fail after a model/thinking/rewind-driven restart.
+-      allowDangerouslySkipPermissions: true,
++      // Agent Crew: never launch with the capability to skip permissions.
++      allowDangerouslySkipPermissions: false,
+       agents: this.defaults?.agents,
+       canUseTool: this.handlePermissionRequest,
+       pathToClaudeCodeExecutable: claudeBinary,
+@@ -3698,7 +3705,9 @@ class ClaudeAgentSession implements AgentSession {
+         preset: "claude_code",
+         append: appendedSystemPrompt,
+       },
+-      settingSources: CLAUDE_SETTING_SOURCES,
++      settingSources: trustProjectSettings
++        ? CLAUDE_SETTING_SOURCES_TRUSTED
++        : CLAUDE_SETTING_SOURCES_UNTRUSTED,
+       stderr: (data: string) => {
+         this.captureStderr(data);
+         this.logger.error({ stderr: data.trim() }, "Claude Agent SDK stderr");
+diff --git a/packages/server/src/server/agent/providers/claude/options.ts b/packages/server/src/server/agent/providers/claude/options.ts
+index 591accc..e2a0a0a 100644
+--- a/packages/server/src/server/agent/providers/claude/options.ts
++++ b/packages/server/src/server/agent/providers/claude/options.ts
+@@ -48,7 +48,10 @@ export const ClaudeProviderOptionsSchema = z
+     allowedTools: z.array(z.string()).optional(),
+     disallowedTools: z.array(z.string()).optional(),
+     additionalDirectories: z.array(z.string()).optional(),
++    // Agent Crew: accepted for schema compatibility, but never forwarded to the SDK (see agent.ts).
+     extraArgs: z.record(z.string(), z.string().nullable()).optional(),
++    // Agent Crew: load the repo's own Claude settings and CLAUDE.md only when the user trusts the repo.
++    trustProjectSettings: z.boolean().optional(),
+     sandbox: z
+       .object({
+         enabled: z.boolean().optional(),

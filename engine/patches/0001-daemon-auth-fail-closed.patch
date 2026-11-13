@@ -1,0 +1,127 @@
+# Agent Crew patch 0001: the daemon always requires its password, and agents can never sign in to it.
+# - No password configured: every WebSocket session and protected HTTP route is refused (upstream admits everyone as owner).
+# - The local-credential file login is removed: upstream writes ~/.paseo/local-credential on every start, and any
+#   process running as the user, the agents included, could read it and get owner access (and approve its own actions).
+# - PASEO_PASSWORD is stripped from the environment of agent processes.
+# Modified by Agent Crew (Apache-2.0 section 4b).
+
+diff --git a/packages/server/src/server/auth.ts b/packages/server/src/server/auth.ts
+index 8184892..f012b7a 100644
+--- a/packages/server/src/server/auth.ts
++++ b/packages/server/src/server/auth.ts
+@@ -22,8 +22,9 @@ interface BearerValidationInput {
+ }
+ 
+ export async function isBearerTokenValidAsync(input: BearerValidationInput): Promise<boolean> {
++  // Agent Crew: fail closed. A daemon without a password accepts no bearer token.
+   if (!input.password) {
+-    return true;
++    return false;
+   }
+   if (input.token === null) {
+     return false;
+@@ -80,10 +81,16 @@ export function createRequireBearerMiddleware(
+ ): RequestHandler {
+   const password = auth?.password;
+   return (req, res, next) => {
+-    if (!password || shouldBypassBearerAuth(req.method, req.path)) {
++    if (shouldBypassBearerAuth(req.method, req.path)) {
+       next();
+       return;
+     }
++    // Agent Crew: fail closed. Without a configured password every protected route is refused.
++    if (!password) {
++      onReject?.({ path: req.path, method: req.method, hasToken: false });
++      res.status(401).json({ error: "Unauthorized" });
++      return;
++    }
+ 
+     void (async () => {
+       try {
+@@ -138,8 +145,9 @@ export async function isAgentMcpRequestAuthorized(input: {
+   capabilityToken: string | null;
+   authorizationHeader: string | undefined;
+ }): Promise<boolean> {
++  // Agent Crew: fail closed, like the global middleware.
+   if (!input.password) {
+-    return true;
++    return false;
+   }
+   const token = extractHttpBearerToken(input.authorizationHeader);
+   if (input.capabilityToken !== null && token !== null) {
+diff --git a/packages/server/src/server/session-admission-auth.ts b/packages/server/src/server/session-admission-auth.ts
+index 8c523c4..02fe7cf 100644
+--- a/packages/server/src/server/session-admission-auth.ts
++++ b/packages/server/src/server/session-admission-auth.ts
+@@ -1,29 +1,24 @@
+ import { compare } from "bcryptjs";
+ import type { WSHelloMessage } from "@getpaseo/protocol/messages";
+ import { OWNER_PERMISSIONS } from "./authorization/index.js";
+-import { matchesLocalCredential } from "./local-credential.js";
+ import type { SessionAdmission } from "./websocket-server.js";
+ 
+ export type AdmissionFailure = "password_required" | "incorrect_password";
+ 
+ type AdmissionResolution = { admission: SessionAdmission } | { rejection: AdmissionFailure };
+ 
++// Agent Crew: every session needs the daemon password. A daemon started without one admits nobody, and the
++// local-credential file login is gone: any process running as the user (agents included) could read that file.
+ export async function resolveSessionAdmission(input: {
+   credential: WSHelloMessage["auth"];
+   passwordHash: string | undefined;
+   localCredential: string | null;
+ }): Promise<AdmissionResolution> {
+-  const { credential, passwordHash, localCredential } = input;
+-  if (!passwordHash) {
+-    return { admission: { principalId: "owner", permissions: OWNER_PERMISSIONS } };
+-  }
+-  if (!credential) {
++  const { credential, passwordHash } = input;
++  if (!passwordHash || !credential) {
+     return { rejection: "password_required" };
+   }
+   if (credential.kind === "localCredential") {
+-    if (localCredential && matchesLocalCredential(localCredential, credential.token)) {
+-      return { admission: { principalId: "owner", permissions: OWNER_PERMISSIONS } };
+-    }
+     return { rejection: "incorrect_password" };
+   }
+   return (await compare(credential.password, passwordHash))
+diff --git a/packages/server/src/server/bootstrap.ts b/packages/server/src/server/bootstrap.ts
+index cf62c52..29d7158 100644
+--- a/packages/server/src/server/bootstrap.ts
++++ b/packages/server/src/server/bootstrap.ts
+@@ -224,7 +224,7 @@ import {
+   isAgentMcpRequestAuthorized,
+   type DaemonAuthConfig,
+ } from "./auth.js";
+-import { deleteLocalCredential, writeLocalCredential } from "./local-credential.js";
++import { deleteLocalCredential } from "./local-credential.js";
+ import { createWebUiMiddleware } from "./web-ui.js";
+ import { WorkspaceAutoName } from "./workspace-auto-name.js";
+ import { createGitMutationService } from "./session/git-mutation/git-mutation-service.js";
+@@ -1737,7 +1737,10 @@ export async function createPaseoDaemon(
+   const start = async () => {
+     let mainStarted = false;
+     try {
+-      localCredential = await writeLocalCredential(config.paseoHome);
++      // Agent Crew: never write a local-credential file (it grants owner access to anything that can read it);
++      // remove one left behind by an earlier run.
++      await deleteLocalCredential(config.paseoHome);
++      localCredential = null;
+       if (serviceProxyListenTarget) {
+         const boundServiceProxyTarget = await serviceProxy.startStandalone({
+           listenTarget: serviceProxyListenTarget,
+diff --git a/packages/server/src/server/paseo-env.ts b/packages/server/src/server/paseo-env.ts
+index 4df58e1..5161e12 100644
+--- a/packages/server/src/server/paseo-env.ts
++++ b/packages/server/src/server/paseo-env.ts
+@@ -8,6 +8,8 @@ const RUNTIME_CONTROL_ENV_KEYS = [
+   ELECTRON_RUN_AS_NODE,
+   "ELECTRON_NO_ATTACH_CONSOLE",
+   "ESBUILD_BINARY_PATH",
++  // Agent Crew: the daemon password must never reach agent processes.
++  "PASEO_PASSWORD",
+ ] as const;
+ 
+ export type PaseoNodeEnv = "development" | "production" | "test";

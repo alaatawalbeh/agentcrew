@@ -1,0 +1,60 @@
+# Agent Crew patch 0003: the engine never updates itself from npm and never connects to a hub.
+# - daemon.update.request always answers "built into Agent Crew" instead of running npm install -g.
+# - hub.management.daemon.connect.request is refused; status, disconnect and permission requests still answer.
+# Modified by Agent Crew (Apache-2.0 section 4b).
+
+diff --git a/packages/server/src/server/session/daemon/daemon-self-updater.ts b/packages/server/src/server/session/daemon/daemon-self-updater.ts
+index 91b5b16..763ee16 100644
+--- a/packages/server/src/server/session/daemon/daemon-self-updater.ts
++++ b/packages/server/src/server/session/daemon/daemon-self-updater.ts
+@@ -44,8 +44,9 @@ const defaultRuntime: DaemonSelfUpdateRuntime = {
+   installOrigin: daemonInstallOriginRuntime,
+ };
+ 
+-const DESKTOP_MANAGED_UPDATE_ERROR =
+-  "This daemon is managed by Paseo Desktop. Update Paseo Desktop on the host.";
++const AGENT_CREW_MANAGED = true;
++const AGENT_CREW_MANAGED_UPDATE_ERROR =
++  "This engine is built into Agent Crew. Update Agent Crew instead.";
+ 
+ export class DaemonSelfUpdater {
+   private inProgress = false;
+@@ -53,8 +54,9 @@ export class DaemonSelfUpdater {
+   constructor(private readonly runtime: DaemonSelfUpdateRuntime = defaultRuntime) {}
+ 
+   async update(input: DaemonSelfUpdateInput): Promise<DaemonSelfUpdateResult> {
+-    if (input.desktopManaged) {
+-      return { success: false, error: DESKTOP_MANAGED_UPDATE_ERROR, newVersion: null };
++    // Agent Crew: the engine is built into the app from a pinned, patched copy. It never installs anything from npm.
++    if (AGENT_CREW_MANAGED || input.desktopManaged) {
++      return { success: false, error: AGENT_CREW_MANAGED_UPDATE_ERROR, newVersion: null };
+     }
+ 
+     if (this.inProgress) {
+diff --git a/packages/server/src/server/session/daemon/daemon-session.ts b/packages/server/src/server/session/daemon/daemon-session.ts
+index 585fa45..4d85e5b 100644
+--- a/packages/server/src/server/session/daemon/daemon-session.ts
++++ b/packages/server/src/server/session/daemon/daemon-session.ts
+@@ -126,19 +126,11 @@ export class DaemonSession {
+     >,
+   ): Promise<void> {
+     try {
+-      if (!this.hubRelationships) throw new Error("Hub relationship management is unavailable");
++      // Agent Crew: no outbound hub connections.
+       if (msg.type === "hub.management.daemon.connect.request") {
+-        const status = await this.hubRelationships.connect({
+-          hubUrl: msg.hubUrl,
+-          token: msg.token,
+-          permissions: msg.permissions,
+-        });
+-        this.host.emit({
+-          type: "hub.management.daemon.connect.response",
+-          payload: { requestId: msg.requestId, status },
+-        });
+-        return;
++        throw new Error("Hub connections are disabled in Agent Crew");
+       }
++      if (!this.hubRelationships) throw new Error("Hub relationship management is unavailable");
+       if (msg.type === "hub.management.daemon.permissions.update.request") {
+         const status = await this.hubRelationships.updatePermissions({
+           grant: msg.grant,

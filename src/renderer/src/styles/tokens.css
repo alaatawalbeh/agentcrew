@@ -1,0 +1,40 @@
+/* Design tokens, taken from design/robot-crew-1a.svg. */
+:root {
+  color-scheme: dark;
+
+  --bg: #14110e;
+  --bg-sidebar: #1a1612;
+  --bg-input: #1f1a15;
+  --bg-card: #2a231b;
+  --bg-card-quiet: #1a1612;
+
+  --border: #2b241c;
+  --border-strong: #3a3026;
+  --border-faint: #4a4034;
+
+  --text: #efe6d8;
+  --text-body: #e6dccd;
+  --text-dim: #a39684;
+  --text-faint: #7a6e5f;
+
+  --accent: #f0a64a;
+  --on-accent: #1d1608;
+
+  --status-speaking: #f3c27a;
+  --status-approval: #f5c542;
+  --status-thinking: #f0a64a;
+  --status-stuck: #e5533d;
+  --status-done: #8fc27a;
+  --status-sleeping: #7a6e5f;
+
+  --diff-add: #8fc27a;
+  --diff-del: #ee8c79;
+
+  --font-ui: 'Instrument Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --sidebar-w: 288px;
+  --header-h: 85px;
+  --column-w: 656px;
+  --composer-w: 720px;
+}
