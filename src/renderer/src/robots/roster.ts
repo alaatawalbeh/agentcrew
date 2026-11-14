@@ -29,6 +29,12 @@ export function robotFor(id: string): Robot {
   return ROSTER[id] ?? FALLBACK;
 }
 
+/** A session's robot, under the name you gave it. */
+export function robotOf(session: { robotId: string; name?: string }): Robot {
+  const robot = robotFor(session.robotId);
+  return session.name ? { ...robot, name: session.name } : robot;
+}
+
 /** The static face's palette. */
 export function paletteFor(robot: Robot): string[] {
   return [...FACES[robot.face].palette];

@@ -30,6 +30,14 @@ export const CREW: readonly RobotInfo[] = ROSTER_ROBOTS.filter((r) => DEFAULT_CR
 
 export const isRosterRobot = (id: string) => ROSTER_ROBOTS.some((r) => r.id === id);
 export const isDefaultCrew = (id: string) => DEFAULT_CREW_IDS.has(id);
+/** The robot's own name from the roster (before you rename it). */
+export const defaultNameOf = (id: string) => ROSTER_ROBOTS.find((r) => r.id === id)?.name ?? id;
+
+/** A name you give a robot: 1–24 characters, starting with a letter or digit. */
+export const MAX_ROBOT_NAME = 24;
+export const ROBOT_NAME = /^[\p{L}\p{N}][\p{L}\p{N} '._-]{0,23}$/u;
+/** Trims a typed name and squeezes runs of spaces. */
+export const tidyName = (text: string) => text.trim().replace(/\s+/g, ' ');
 
 export const sessionIdFor = (robotId: string) => `s-${robotId}`;
 export const robotIdFor = (sessionId: string) => sessionId.replace(/^s-/, '');
@@ -39,6 +47,8 @@ export const ROBOT_LABEL = 'crew.robot';
 export const BASE_LABEL = 'crew.base';
 export const BRANCH_LABEL = 'crew.branch';
 export const REPO_LABEL = 'crew.repo';
+/** "folder" when the robot works straight in a folder that isn't a git repo (no worktree, no branch). */
+export const WORKSPACE_LABEL = 'crew.workspace';
 
 /** What the renderer is told about the engine. */
 export type EngineState =
@@ -63,8 +73,11 @@ export interface FolderChoice {
   path: string;
 }
 
+/** The folder a robot works in: a git repo (it gets its own worktree) or a plain folder (it works in place). */
 export interface RepoChoice extends FolderChoice {
   name: string;
+  git: boolean;
+  /** Empty for a plain folder. */
   branches: string[];
   currentBranch: string;
 }
@@ -83,6 +96,7 @@ export interface NewSessionRequest {
   robotId: string;
   task: string;
   repoToken: string;
+  /** Empty for a plain folder. */
   baseBranch: string;
   model: string;
   modeId: string;

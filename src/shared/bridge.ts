@@ -26,9 +26,14 @@ export interface CrewBridge {
   listModels(): Promise<ModelOption[]>;
   createSession(request: NewSessionRequest): Promise<{ started: boolean }>;
 
-  /** The robot's changes against its base branch, as a unified diff. */
+  /** The robot's changes against its base branch, as a unified diff (in a plain folder: its own edits). */
   changes(sessionId: string): Promise<string>;
   openFolder(sessionId: string): Promise<void>;
   /** Archives the session after a confirmation shown by the app; the robot goes back to sleep. */
   archive(sessionId: string): Promise<{ archived: boolean }>;
+
+  /** Gives the robot a new name. Throws with a readable message if the name can't be used. */
+  rename(sessionId: string, name: string): Promise<void>;
+  /** Deletes the robot from the crew after a confirmation shown by the app: its session and conversation go too. */
+  remove(sessionId: string): Promise<{ removed: boolean }>;
 }

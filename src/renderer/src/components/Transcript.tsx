@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef } from 'react';
 import type { SessionView } from '@shared/types';
 import { bridge } from '../bridge';
 import { RobotFace } from '../robots/RobotFace';
-import { robotFor } from '../robots/roster';
+import { robotOf } from '../robots/roster';
 import {
   AgentMessage,
   ApprovalNote,
@@ -18,7 +18,7 @@ import {
 const STICKY_PX = 120;
 
 export function Transcript({ session }: { session: SessionView }) {
-  const robot = robotFor(session.robotId);
+  const robot = robotOf(session);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const lastSession = useRef(session.id);

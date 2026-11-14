@@ -1,10 +1,12 @@
-import { app, dialog, Menu, Notification, session, type BrowserWindow } from 'electron';
-import { ROSTER_ROBOTS, type EngineState, type ModelOption } from '@shared/crew';
+import { app, Menu, Notification, session, type BrowserWindow } from 'electron';
+import { join } from 'node:path';
+import type { EngineState, ModelOption } from '@shared/crew';
 import type { CrewSnapshot, Status } from '@shared/types';
-import { CrewManager, DEFAULT_MODEL } from './crew/CrewManager';
+import { CrewManager, DEFAULT_MODEL, sleepingSnapshot } from './crew/CrewManager';
+import { CrewStore } from './crew/crewStore';
 import { modelLabel, SessionSetup } from './crew/sessionSetup';
 import { engineDataDir, EngineService } from './engine/EngineService';
-import { registerCrewIpc } from './ipc';
+import { registerCrewIpc, type TestDeleteChoice } from './ipc';
 import { APP_ORIGIN, registerAppScheme, serveAppScheme } from './protocol';
 import { denyAllPermissions, hardenWebContents, originOf } from './security';
 import { createMainWindow, rendererDevUrl } from './window';
@@ -25,6 +27,8 @@ if (!app.requestSingleInstanceLock()) {
   let crew: CrewManager | null = null;
   let engineState: EngineState = { state: 'starting' };
   const engine = new EngineService();
+  // Who's in the crew and what you've called them.
+  const store = new CrewStore(join(app.getPath('userData'), 'crew.json'));
 
   const sendToWindow = (channel: string, value: unknown) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, value);
@@ -34,30 +38,36 @@ if (!app.requestSingleInstanceLock()) {
     sendToWindow('crew:notice', message);
   };
 
-  // Development builds only: end-to-end tests skip the native folder dialog and may pick a cheaper model or the
-  // "Always ask" mode. A packaged app ignores these.
-  const testHooks = app.isPackaged
+  // Development builds only: end-to-end tests skip the native folder dialog (and the plain-folder confirmation),
+  // may pick a cheaper model or the "Always ask" mode, and answer the archive and delete dialogs. A packaged app
+  // ignores these.
+  const testHooks: {
+    repo?: string;
+    model?: string;
+    modeId?: string;
+    archiveChoice?: 0 | 1;
+    deleteChoice?: TestDeleteChoice;
+  } = app.isPackaged
     ? {}
     : {
         repo: process.env.AGENT_CREW_TEST_REPO,
         model: process.env.AGENT_CREW_TEST_MODEL,
         modeId: process.env.AGENT_CREW_TEST_MODE,
         archiveChoice: ({ remove: 0, keep: 1 } as const)[process.env.AGENT_CREW_TEST_ARCHIVE as 'remove' | 'keep'],
+        deleteChoice: (['remove', 'keep', 'cancel'] as const).find((c) => c === process.env.AGENT_CREW_TEST_DELETE),
       };
 
-  // The repo for a new agent is always chosen in a native dialog shown by main, never passed in by the page.
-  const pickRepo = async (robotName: string): Promise<string | null> => {
-    if (testHooks.repo) return testHooks.repo;
-    const options = {
-      title: `Choose a repo for ${robotName}`,
-      buttonLabel: `Give ${robotName} this repo`,
-      properties: ['openDirectory' as const],
-    };
-    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
-    return result.canceled ? null : (result.filePaths[0] ?? null);
-  };
+  // A robot's folder is always chosen in a native dialog shown by main, never passed in by the page.
+  const setup = new SessionSetup(() => mainWindow, {
+    appDataDir: app.getPath('userData'),
+    robotsWorkingIn: (folder) => crew?.robotsWorkingIn(folder) ?? [],
+    testRepo: testHooks.repo,
+  });
 
-  const setup = new SessionSetup(() => mainWindow, testHooks.repo);
+  // Before the engine is ready, a rename still shows right away.
+  store.onChange(() => {
+    if (!crew) sendToWindow('crew:snapshot', sleepingSnapshot(store));
+  });
 
   /** The engine's Claude models, newest first as the engine lists them, with the default first. */
   let modelCache: ModelOption[] | null = null;
@@ -80,7 +90,7 @@ if (!app.requestSingleInstanceLock()) {
       const before = lastStatus.get(s.id);
       lastStatus.set(s.id, s.status);
       if (!NEEDS_YOU.has(s.status) || before === s.status || before === undefined) continue;
-      const name = ROSTER_ROBOTS.find((r) => r.id === s.robotId)?.name ?? 'A robot';
+      const name = s.name;
       if (mainWindow?.isFocused() || !Notification.isSupported()) {
         console.log(`[notify] ${name} ${s.status}: not shown (${mainWindow?.isFocused() ? 'window in front' : 'unsupported'})`);
         continue;
@@ -113,7 +123,8 @@ if (!app.requestSingleInstanceLock()) {
           announce(snapshot);
           sendToWindow('crew:snapshot', snapshot);
         },
-        pickRepo,
+        store,
+        (robotName) => setup.chooseWorkspace(robotName),
         notify,
         {
           model: testHooks.model || DEFAULT_MODEL,
@@ -131,12 +142,14 @@ if (!app.requestSingleInstanceLock()) {
 
   registerCrewIpc({
     crew: () => crew,
+    store,
     setup,
     models,
     engineState: () => engineState,
     window: () => mainWindow,
     allowedOrigin: rendererOrigin,
-    testArchiveChoice: 'archiveChoice' in testHooks ? testHooks.archiveChoice : undefined,
+    testArchiveChoice: testHooks.archiveChoice,
+    testDeleteChoice: testHooks.deleteChoice,
   });
 
   // Stop the local engine before quitting, so local agents pause cleanly instead of being killed mid-write.

@@ -40,5 +40,7 @@ contextBridge.exposeInMainWorld(
     changes: (sessionId: string) => ipcRenderer.invoke('crew:changes', sessionId),
     openFolder: (sessionId: string) => ipcRenderer.invoke('crew:open-folder', sessionId),
     archive: (sessionId: string) => ipcRenderer.invoke('crew:archive', sessionId),
+    rename: (sessionId: string, name: string) => ipcRenderer.invoke('crew:rename', sessionId, name),
+    remove: (sessionId: string) => ipcRenderer.invoke('crew:remove', sessionId),
   }),
 );

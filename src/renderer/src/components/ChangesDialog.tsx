@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { SessionView } from '@shared/types';
 import { bridge } from '../bridge';
-import { robotFor } from '../robots/roster';
+import { robotOf } from '../robots/roster';
 import { parseChanges, type FileChange } from './changes';
 import { Modal } from './Modal';
 import { CloseIcon } from './NewSessionDialog';
-import { whereLabel } from './SessionHeader';
+import { whereLabel } from './where';
 
 const SIGN = { add: '+', del: '-', ctx: ' ', hunk: '' } as const;
 const STATUS = { modified: '', new: 'new', deleted: 'deleted', renamed: 'renamed' } as const;
@@ -37,9 +37,9 @@ function FileDiff({ file }: { file: FileChange }) {
 
 type Load = { state: 'loading' } | { state: 'ready'; text: string } | { state: 'failed'; error: string };
 
-/** The robot's changes against the branch it started from, committed or not. */
+/** The robot's changes against the branch it started from, committed or not (in a plain folder: its own edits). */
 export function ChangesDialog({ session, onClose }: { session: SessionView; onClose: () => void }) {
-  const robot = robotFor(session.robotId);
+  const robot = robotOf(session);
   const [load, setLoad] = useState<Load>({ state: 'loading' });
 
   const refresh = useCallback(() => {
@@ -83,7 +83,7 @@ export function ChangesDialog({ session, onClose }: { session: SessionView; onCl
         </button>
       </header>
       <div className="changes-body">
-        {load.state === 'loading' && <p className="changes-note">Reading the worktree…</p>}
+        {load.state === 'loading' && <p className="changes-note">Reading the changes…</p>}
         {load.state === 'failed' && <p className="changes-note warn">{load.error}</p>}
         {changes?.files.map((file, i) => <FileDiff key={`${file.path}-${i}`} file={file} />)}
         {changes?.notes.map((note, i) => (

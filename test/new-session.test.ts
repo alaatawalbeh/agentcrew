@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSampleBridge } from '../src/renderer/src/bridge/sample';
 import { parseChanges } from '../src/renderer/src/components/changes';
 import { freeRobotIds, readRules } from '../src/renderer/src/components/newSession';
+import { whereLabel } from '../src/renderer/src/components/where';
 import type { SessionView } from '../src/shared/types';
 
 const byId = (sessions: SessionView[], id: string) => sessions.find((x) => x.id === id);
@@ -77,7 +78,7 @@ describe('sample bridge: sessions', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('starts a roster robot in a repo picked in the dialog, then archives it', async () => {
+  it('starts a roster robot in a repo picked in the dialog, archives it, then deletes it', async () => {
     const bridge = createSampleBridge('full');
     const repo = await bridge.pickRepo();
     const [model] = await bridge.listModels();
@@ -99,8 +100,45 @@ describe('sample bridge: sessions', () => {
     await vi.runAllTimersAsync();
     expect(byId(bridge.snapshot().sessions, 's-rook')?.status).toBe('done');
 
+    // Archived, Rook stays in the crew, asleep; deleted, it leaves.
     expect(await bridge.archive('s-rook')).toEqual({ archived: true });
+    expect(byId(bridge.snapshot().sessions, 's-rook')).toMatchObject({ status: 'sleeping', name: 'Rook' });
+    expect(await bridge.remove('s-rook')).toEqual({ removed: true });
     expect(byId(bridge.snapshot().sessions, 's-rook')).toBeUndefined();
+    expect(freeRobotIds(bridge.snapshot().sessions)).toContain('rook');
+  });
+
+  it('works straight in a plain folder: no branch, and its own edits as the changes', async () => {
+    const bridge = createSampleBridge('full');
+    await bridge.pickRepo();
+    const folder = await bridge.pickRepo();
+    expect(folder).toMatchObject({ git: false, branches: [], name: 'landing-page' });
+    await bridge.createSession({
+      robotId: 'lyra',
+      task: 'Tidy the landing page',
+      repoToken: folder!.token,
+      baseBranch: '',
+      model: 'claude-opus-5-5',
+      modeId: 'auto',
+      folderTokens: [],
+      allowRules: [],
+      trustProjectSettings: false,
+    });
+    const lyra = byId(bridge.snapshot().sessions, 's-lyra')!;
+    expect(lyra).toMatchObject({ repo: 'landing-page', workspace: 'folder' });
+    expect(lyra.branch).toBeUndefined();
+    expect(whereLabel(lyra)).toBe('landing-page · in place');
+  });
+
+  it('renames a robot, keeping names unique and roster names free', async () => {
+    const bridge = createSampleBridge('full');
+    await bridge.rename('s-atlas', '  Captain   Atlas ');
+    expect(byId(bridge.snapshot().sessions, 's-atlas')?.name).toBe('Captain Atlas');
+    await expect(bridge.rename('s-vega', 'captain atlas')).rejects.toThrow('Another robot is already called Captain Atlas.');
+    await expect(bridge.rename('s-vega', 'Rook')).rejects.toThrow("Rook is another robot's name.");
+    await expect(bridge.rename('s-vega', '<b>hi</b>')).rejects.toThrow('Use letters, numbers');
+    await bridge.rename('s-atlas', '');
+    expect(byId(bridge.snapshot().sessions, 's-atlas')?.name).toBe('Atlas');
   });
 
   it('refuses a robot that already has a session, or a repo it never offered', async () => {

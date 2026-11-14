@@ -1,10 +1,12 @@
 // The main-process half of the New session dialog. Folders are only ever chosen in native dialogs shown here; the
 // page gets an opaque token and a display path. Every request is checked again here, and anything that gives a
-// robot more power than the defaults (allow rules, trusting the repo's own Claude settings) is confirmed in a native
-// dialog the page can't answer for you.
+// robot more power than the defaults (allow rules, trusting the repo's own Claude settings, working straight in a
+// folder that isn't a git repo) is confirmed in a native dialog the page can't answer for you.
 import { dialog, type BrowserWindow, type MessageBoxOptions, type OpenDialogOptions } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { basename, resolve } from 'node:path';
 import {
   ALLOW_RULE,
   MAX_ALLOW_RULES,
@@ -18,13 +20,60 @@ import {
 import { repoInfo, type RepoInfo } from './git';
 import type { SessionPlan } from './CrewManager';
 
-const MAX_TASK = 20_000;
-const BROAD_RULE = /^(Bash|Edit|Write|Read|WebFetch|NotebookEdit)(\((\*|\*\*|\/\/\*\*)\))?$/;
-
 const tilde = (path: string) => {
   const home = homedir();
   return path === home ? '~' : path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 };
+
+/** Where a robot works: a git repo (it gets its own worktree) or a plain folder (`repo` null: it works in place). */
+export interface Workspace {
+  root: string;
+  name: string;
+  repo: RepoInfo | null;
+}
+
+const inside = (path: string, folder: string) => path === folder || path.startsWith(`${folder}/`);
+
+/**
+ * Why a robot can't work straight in this folder, or null if it can. Never the whole disk, your home folder or
+ * anything above it, or Agent Crew's own data (the engine's records and the robots' worktrees).
+ */
+export function plainFolderProblem(folder: string, home: string, appData: string): string | null {
+  const path = resolve(folder);
+  if (path === '/') return 'Pick a project folder, not the whole disk.';
+  if (inside(home, path)) return 'Pick a project folder, not your whole home folder.';
+  if (inside(path, appData) || inside(appData, path)) return "That folder holds Agent Crew's own data. Pick a project folder.";
+  return null;
+}
+
+/** The text of the confirmation for working straight in a plain folder. */
+export function plainFolderQuestion(options: { folder: string; robotName?: string; sharedWith: string[] }): MessageBoxOptions {
+  const who = options.robotName ?? 'The robot';
+  const shared = options.sharedWith;
+  const lines = [
+    `${tilde(options.folder)} isn't a git repository, so ${options.robotName ?? 'the robot'} can't get its own copy to work in.`,
+    '',
+    `${who} will change your files in place as it works. There's no branch to review first, and nothing to throw away if you don't like the result.`,
+  ];
+  if (shared.length) {
+    const names = shared.length === 1 ? shared[0] : `${shared.slice(0, -1).join(', ')} and ${shared.at(-1)}`;
+    lines.push('', `${names} already ${shared.length === 1 ? 'works' : 'work'} in this folder, on the same files.`);
+  }
+  return {
+    type: 'question',
+    buttons: ['Work in this folder', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+    title: 'Agent Crew',
+    message: `Work directly in ${basename(options.folder) || options.folder}?`,
+    detail: lines.join('\n'),
+  };
+}
+
+const MAX_TASK = 20_000;
+const BROAD_RULE = /^(Bash|Edit|Write|Read|WebFetch|NotebookEdit)(\((\*|\*\*|\/\/\*\*)\))?$/;
+
 
 /** "claude-opus-5-5" → "Opus 5.5", "claude-sonnet-5[1m]" → "Sonnet 5 (1M context)". */
 export function modelLabel(id: string): string {
@@ -36,14 +85,25 @@ export function modelLabel(id: string): string {
 }
 
 export class SessionSetup {
-  private repos = new Map<string, RepoInfo>();
+  private repos = new Map<string, Workspace>();
   private folders = new Map<string, string>();
 
   constructor(
     private readonly window: () => BrowserWindow | null,
-    /** Development-only: a repo to use instead of showing the dialog (end-to-end tests). */
-    private readonly testRepo?: string,
+    private readonly options: {
+      /** Agent Crew's data folder: never a robot's plain folder. */
+      appDataDir: string;
+      /** The names of robots already working straight in this folder. */
+      robotsWorkingIn: (folder: string) => string[];
+      /** Development-only: a folder to use instead of showing the dialog, already confirmed (end-to-end tests). */
+      testRepo?: string;
+    },
   ) {}
+
+  private async ask(box: MessageBoxOptions): Promise<number> {
+    const win = this.window();
+    return (win ? await dialog.showMessageBox(win, box) : await dialog.showMessageBox(box)).response;
+  }
 
   private async chooseFolder(options: OpenDialogOptions): Promise<string | null> {
     const win = this.window();
@@ -51,16 +111,51 @@ export class SessionSetup {
     return result.canceled ? null : (result.filePaths[0] ?? null);
   }
 
-  async pickRepo(): Promise<RepoChoice | null> {
+  /**
+   * Shows the folder picker for a robot's work (unless a test folder is set). See `workspace` for what happens to a
+   * folder that isn't a git repo.
+   */
+  async chooseWorkspace(robotName?: string): Promise<Workspace | null> {
     const folder =
-      this.testRepo ??
-      (await this.chooseFolder({ title: 'Choose a repo for the new session', properties: ['openDirectory'] }));
-    if (!folder) return null;
-    const info = await repoInfo(folder);
-    if (!info) throw new Error(`${tilde(folder)} isn't a git repository with at least one commit.`);
+      this.options.testRepo ??
+      (await this.chooseFolder({
+        title: robotName ? `Choose a project folder for ${robotName}` : 'Choose a project folder for the new session',
+        buttonLabel: robotName ? `Give ${robotName} this folder` : 'Choose',
+        properties: ['openDirectory'],
+      }));
+    return folder ? this.workspace(folder, robotName) : null;
+  }
+
+  /**
+   * A git repo with at least one commit, or else a plain folder the robot works in directly, once you've said yes
+   * in a native dialog. Throws for folders a robot may never work in directly. Null if you cancel.
+   */
+  async workspace(folder: string, robotName?: string): Promise<Workspace | null> {
+    const repo = await repoInfo(folder);
+    if (repo) return { root: repo.root, name: repo.name, repo };
+    const root = await realpath(folder).catch(() => resolve(folder));
+    const problem = plainFolderProblem(root, homedir(), this.options.appDataDir);
+    if (problem) throw new Error(problem);
+    if (!this.options.testRepo) {
+      const question = plainFolderQuestion({ folder: root, robotName, sharedWith: this.options.robotsWorkingIn(root) });
+      if ((await this.ask(question)) !== 0) return null;
+    }
+    return { root, name: basename(root) || root, repo: null };
+  }
+
+  async pickRepo(): Promise<RepoChoice | null> {
+    const ws = await this.chooseWorkspace();
+    if (!ws) return null;
     const token = randomUUID();
-    this.repos.set(token, info);
-    return { token, path: tilde(info.root), name: info.name, branches: info.branches, currentBranch: info.currentBranch };
+    this.repos.set(token, ws);
+    return {
+      token,
+      path: tilde(ws.root),
+      name: ws.name,
+      git: !!ws.repo,
+      branches: ws.repo?.branches ?? [],
+      currentBranch: ws.repo?.currentBranch ?? '',
+    };
   }
 
   async pickFolder(): Promise<FolderChoice | null> {
@@ -75,22 +170,27 @@ export class SessionSetup {
    * Checks a New session request from the page and turns it into a plan. Returns null if you cancel the
    * confirmation. Throws with a readable message when something doesn't check out.
    */
-  async plan(request: unknown, options: { freeRobots: string[]; models: ModelOption[] }): Promise<SessionPlan | null> {
+  async plan(
+    request: unknown,
+    options: { freeRobots: string[]; models: ModelOption[]; nameOf: (robotId: string) => string },
+  ): Promise<SessionPlan | null> {
     if (!request || typeof request !== 'object') throw new Error('Invalid request.');
     const r = request as Record<string, unknown>;
 
     const robotId = typeof r.robotId === 'string' ? r.robotId : '';
-    const robot = ROSTER_ROBOTS.find((x) => x.id === robotId);
-    if (!robot) throw new Error('Unknown robot.');
+    if (!ROSTER_ROBOTS.some((x) => x.id === robotId)) throw new Error('Unknown robot.');
+    const robot = { id: robotId, name: options.nameOf(robotId) };
     if (!options.freeRobots.includes(robotId)) throw new Error(`${robot.name} already has a session.`);
 
     const task = typeof r.task === 'string' ? r.task.trim() : '';
     if (!task || task.length > MAX_TASK) throw new Error('The task must be between 1 and 20,000 characters.');
 
     const repo = typeof r.repoToken === 'string' ? this.repos.get(r.repoToken) : undefined;
-    if (!repo) throw new Error('Choose the repo again.');
-    const baseBranch = typeof r.baseBranch === 'string' ? r.baseBranch : '';
-    if (!repo.branches.includes(baseBranch)) throw new Error(`${baseBranch || 'That branch'} isn't a branch of ${repo.name}.`);
+    if (!repo) throw new Error('Choose the folder again.');
+    const baseBranch = repo.repo && typeof r.baseBranch === 'string' ? r.baseBranch : '';
+    if (repo.repo && !repo.repo.branches.includes(baseBranch)) {
+      throw new Error(`${baseBranch || 'That branch'} isn't a branch of ${repo.name}.`);
+    }
 
     const model = typeof r.model === 'string' ? r.model : '';
     if (!options.models.some((m) => m.id === model)) throw new Error('Unknown model.');
@@ -143,6 +243,7 @@ export class SessionSetup {
       task,
       repoRoot: repo.root,
       repoName: repo.name,
+      plain: !repo.repo,
       baseBranch,
       model,
       modeId,

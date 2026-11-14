@@ -8,6 +8,14 @@ export function rendererDevUrl(): string | null {
   return !app.isPackaged && url ? url : null;
 }
 
+/**
+ * The window's own icon (resources/icon.png, drawn by scripts/make-icon.mjs). X11 and KDE show it; GNOME on Wayland
+ * takes the icon from the installed agent-crew.desktop entry instead (scripts/install-desktop.mjs).
+ */
+function windowIcon(): string {
+  return app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(app.getAppPath(), 'resources', 'icon.png');
+}
+
 export function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
@@ -17,6 +25,7 @@ export function createMainWindow(): BrowserWindow {
     minHeight: 600,
     show: false,
     title: 'Agent Crew',
+    icon: windowIcon(),
     backgroundColor: '#14110e',
     autoHideMenuBar: true,
     webPreferences: {

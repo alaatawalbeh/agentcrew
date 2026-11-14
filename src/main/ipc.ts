@@ -3,9 +3,10 @@
 import { dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent, type MessageBoxOptions } from 'electron';
 import { homedir } from 'node:os';
 import type { EngineState, ModelOption } from '@shared/crew';
-import { ROSTER_ROBOTS, sessionIdFor } from '@shared/crew';
+import { robotIdFor, ROSTER_ROBOTS, sessionIdFor } from '@shared/crew';
 import type { ApprovalDecision } from '@shared/types';
-import type { CrewManager } from './crew/CrewManager';
+import { sleepingSnapshot, type CrewManager } from './crew/CrewManager';
+import type { CrewStore } from './crew/crewStore';
 import type { SessionSetup } from './crew/sessionSetup';
 import { originOf } from './security';
 
@@ -37,8 +38,12 @@ function decision(value: unknown): ApprovalDecision {
 
 const tilde = (path: string) => (path.startsWith(`${homedir()}/`) ? `~${path.slice(homedir().length)}` : path);
 
+/** A development-build test answer for the delete dialog. */
+export type TestDeleteChoice = 'remove' | 'keep' | 'cancel';
+
 export function registerCrewIpc(options: {
   crew: () => CrewManager | null;
+  store: CrewStore;
   setup: SessionSetup;
   models: () => Promise<ModelOption[]>;
   engineState: () => EngineState;
@@ -46,6 +51,8 @@ export function registerCrewIpc(options: {
   allowedOrigin: () => string;
   /** Development builds only (end-to-end tests): the answer to the archive dialog, 0 remove or 1 keep the worktree. */
   testArchiveChoice?: 0 | 1;
+  /** Development builds only: the answer to the delete dialog. */
+  testDeleteChoice?: TestDeleteChoice;
 }): void {
   /** Accepts calls only from the main window's top frame, loaded from the app's own origin. */
   const guard =
@@ -73,7 +80,7 @@ export function registerCrewIpc(options: {
 
   ipcMain.handle(
     'crew:hello',
-    guard(() => ({ engine: options.engineState(), snapshot: options.crew()?.snapshot() ?? null })),
+    guard(() => ({ engine: options.engineState(), snapshot: options.crew()?.snapshot() ?? sleepingSnapshot(options.store) })),
   );
   ipcMain.handle('crew:send', guard((id: unknown, text: unknown) => crew().send(sessionId(id), message(text))));
   ipcMain.handle('crew:broadcast', guard((text: unknown) => crew().broadcast(message(text))));
@@ -95,7 +102,11 @@ export function registerCrewIpc(options: {
     'crew:create-session',
     guard(async (request: unknown) => {
       const manager = crew();
-      const plan = await options.setup.plan(request, { freeRobots: manager.freeRobots(), models: await options.models() });
+      const plan = await options.setup.plan(request, {
+        freeRobots: manager.freeRobots(),
+        models: await options.models(),
+        nameOf: (robotId) => manager.nameOf(robotId),
+      });
       if (!plan) return { started: false };
       await manager.startSession(plan);
       return { started: true };
@@ -118,8 +129,24 @@ export function registerCrewIpc(options: {
     guard(async (id: unknown) => {
       const manager = crew();
       const sid = sessionId(id);
-      const preview = await manager.archivePreview(sid);
-      if (!preview) return { archived: false };
+      const preview = await manager.sessionPreview(sid);
+      if (!preview.hasSession) return { archived: false };
+      if (!preview.worktree) {
+        // A plain folder: nothing to remove, the robot just goes back to sleep.
+        const plainChoice = options.testArchiveChoice !== undefined ? 0 : await ask({
+          type: 'question',
+          buttons: [`Archive ${preview.name}'s session`, 'Cancel'],
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+          title: 'Agent Crew',
+          message: `Archive ${preview.name}'s session?`,
+          detail: `${preview.name} stops and goes back to sleep. Your files in ${tilde(preview.folder ?? '')} stay as they are.`,
+        });
+        if (plainChoice !== 0) return { archived: false };
+        await manager.archive(sid, { removeWorktree: false, force: false });
+        return { archived: true };
+      }
       const where = preview.worktree ? tilde(preview.worktree) : 'no worktree';
       const detail = [
         `${preview.name} stops and goes back to sleep. Its conversation is kept in the engine's records.`,
@@ -142,6 +169,73 @@ export function registerCrewIpc(options: {
       if (choice === 2) return { archived: false };
       await manager.archive(sid, { removeWorktree: choice === 0, force: preview.dirty });
       return { archived: true };
+    }),
+  );
+
+  // ---------- Rename and delete ----------
+  ipcMain.handle(
+    'crew:rename',
+    guard((id: unknown, name: unknown) => {
+      const sid = sessionId(id);
+      if (typeof name !== 'string' || name.length > 200) throw new Error('A name must be text.');
+      const manager = options.crew();
+      if (manager) return manager.rename(sid, name);
+      // Before the engine is ready the crew is all asleep: only the name changes.
+      const robotId = robotIdFor(sid);
+      if (!options.store.isMember(robotId)) throw new Error("That robot isn't in your crew.");
+      options.store.rename(robotId, name);
+    }),
+  );
+  ipcMain.handle(
+    'crew:remove',
+    guard(async (id: unknown) => {
+      const manager = crew();
+      const sid = sessionId(id);
+      const p = await manager.sessionPreview(sid);
+      const test = options.testDeleteChoice;
+      const gone = `${p.name} stops and leaves the crew. Its conversation is deleted from Agent Crew.`;
+
+      if (!p.hasSession || !p.worktree) {
+        // Asleep, or working straight in a plain folder: nothing on disk is touched.
+        const detail = !p.hasSession
+          ? `You can add it back any time from + New session.`
+          : `${gone}\nYour files in ${tilde(p.folder ?? '')} stay as they are, ${p.name}'s edits included.`;
+        const choice = test ? (test === 'cancel' ? 1 : 0) : await ask({
+          type: 'question',
+          buttons: [p.hasSession ? `Delete ${p.name}` : `Remove ${p.name}`, 'Cancel'],
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+          title: 'Agent Crew',
+          message: p.hasSession ? `Delete ${p.name}?` : `Remove ${p.name} from the crew?`,
+          detail,
+        });
+        if (choice !== 0) return { removed: false };
+        await manager.remove(sid, { removeWorktree: false, force: false });
+        return { removed: true };
+      }
+
+      const detail = [
+        gone,
+        `Worktree: ${tilde(p.worktree)}`,
+        p.branch ? `The branch ${p.branch} is kept, with any commits on it.` : '',
+        p.dirty ? '\nThe worktree has uncommitted changes. Removing it throws them away.' : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+      const choice = test ? { remove: 0, keep: 1, cancel: 2 }[test] : await ask({
+        type: p.dirty ? 'warning' : 'question',
+        buttons: [`Delete ${p.name} and remove the worktree`, `Delete ${p.name}, keep the worktree`, 'Cancel'],
+        defaultId: p.dirty ? 1 : 0,
+        cancelId: 2,
+        noLink: true,
+        title: 'Agent Crew',
+        message: `Delete ${p.name}?`,
+        detail,
+      });
+      if (choice === 2) return { removed: false };
+      await manager.remove(sid, { removeWorktree: choice === 0, force: p.dirty });
+      return { removed: true };
     }),
   );
 }

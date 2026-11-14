@@ -1,6 +1,10 @@
 // Sample crew for phase 1. "design" is exactly the six agents in design/robot-crew-1a.svg; "full" adds hosts,
 // a pending approval, a usage-limit error, a finished agent on Windows and a paused agent.
+import { defaultNameOf } from '@shared/crew';
 import type { DiffLine, PendingApproval, PlanItem, SessionView, Status } from '@shared/types';
+
+/** A sample session before it gets its robot's name. */
+type Sample = Omit<SessionView, 'name'>;
 
 export type Scenario = 'full' | 'design';
 
@@ -36,7 +40,7 @@ const diff = (lines: string): DiffLine[] =>
 
 // ---------- the six agents from the design ----------
 
-function atlas(): SessionView {
+function atlas(): Sample {
   return {
     id: 's-atlas',
     robotId: 'atlas',
@@ -111,7 +115,7 @@ function atlas(): SessionView {
   };
 }
 
-function vega(): SessionView {
+function vega(): Sample {
   const pendingApproval: PendingApproval = {
     id: 'vega-p1',
     tool: 'Bash',
@@ -179,7 +183,7 @@ function vega(): SessionView {
   };
 }
 
-function orin(scenario: Scenario): SessionView {
+function orin(scenario: Scenario): Sample {
   return {
     id: 's-orin',
     robotId: 'orin',
@@ -240,7 +244,7 @@ function orin(scenario: Scenario): SessionView {
   };
 }
 
-function nova(): SessionView {
+function nova(): Sample {
   return {
     id: 's-nova',
     robotId: 'nova',
@@ -279,7 +283,7 @@ function nova(): SessionView {
   };
 }
 
-function kit(scenario: Scenario): SessionView {
+function kit(scenario: Scenario): Sample {
   return {
     id: 's-kit',
     robotId: 'kit',
@@ -334,7 +338,7 @@ function kit(scenario: Scenario): SessionView {
   };
 }
 
-function sable(): SessionView {
+function sable(): Sample {
   return {
     id: 's-sable',
     robotId: 'sable',
@@ -346,7 +350,7 @@ function sable(): SessionView {
   };
 }
 
-function juno(): SessionView {
+function juno(): Sample {
   return {
     id: 's-juno',
     robotId: 'juno',
@@ -381,7 +385,7 @@ function juno(): SessionView {
 
 export function sampleSessions(scenario: Scenario): SessionView[] {
   const crew = [atlas(), vega(), orin(scenario), nova(), kit(scenario), sable()];
-  return scenario === 'full' ? [...crew, juno()] : crew;
+  return (scenario === 'full' ? [...crew, juno()] : crew).map((s) => ({ ...s, name: defaultNameOf(s.robotId) }));
 }
 
 // ---------- scripted behaviour ----------

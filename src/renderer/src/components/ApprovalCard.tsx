@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { ApprovalDecision, PendingApproval, SessionView } from '@shared/types';
 import { bridge } from '../bridge';
-import { robotFor } from '../robots/roster';
+import { robotOf } from '../robots/roster';
 
 function askLine(tool: string): string {
   switch (tool) {
@@ -22,7 +22,7 @@ function askLine(tool: string): string {
  * truncated, and there is deliberately no keyboard shortcut that approves.
  */
 export function ApprovalCard({ session, approval }: { session: SessionView; approval: PendingApproval }) {
-  const robot = robotFor(session.robotId);
+  const robot = robotOf(session);
   const [sent, setSent] = useState(false);
   const answer = (decision: ApprovalDecision) => {
     if (sent) return;

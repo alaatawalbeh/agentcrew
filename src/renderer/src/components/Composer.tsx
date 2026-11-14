@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, type KeyboardEvent } from 'react';
 import { isRunning, type SessionView } from '@shared/types';
 import { bridge } from '../bridge';
-import { robotFor } from '../robots/roster';
+import { robotOf } from '../robots/roster';
 import { useCrew } from '../store';
 
 /** Something is actually in flight: thinking, a reply streaming in, or a tool running. */
@@ -14,7 +14,7 @@ function isWorking(session: SessionView): boolean {
 }
 
 export function Composer({ session }: { session: SessionView }) {
-  const robot = robotFor(session.robotId);
+  const robot = robotOf(session);
   const broadcast = useCrew((s) => s.broadcast);
   const setBroadcast = useCrew((s) => s.setBroadcast);
   const draft = useCrew((s) => s.drafts[session.id] ?? '');

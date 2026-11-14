@@ -15,6 +15,10 @@ asar: true
 # The engine runs as its own process, so it lives outside the asar archive: engine/stage → resources/engine, copied
 # by this hook (electron-builder's extraResources would leave out its node_modules).
 afterPack: scripts/after-pack.cjs
+# The window's own icon, read from process.resourcesPath (src/main/window.ts).
+extraResources:
+  - from: resources/icon.png
+    to: icon.png
 npmRebuild: false
 # Electron's build-time switches: no running the binary as plain Node, no NODE_OPTIONS or --inspect, only the app's
 # own asar archive loads, and file:// gets no extra privileges.
@@ -34,7 +38,8 @@ linux:
     - target: AppImage
       arch: [x64]
   category: Development
-  icon: resources/icon.png
+  # Every size from scripts/make-icon.mjs (16 to 512), so small sizes use their own simpler drawing.
+  icon: resources/icons
   synopsis: A control room for a crew of Claude Code agents
   syncDesktopName: true
   artifactName: Agent-Crew-${version}-${arch}.${ext}

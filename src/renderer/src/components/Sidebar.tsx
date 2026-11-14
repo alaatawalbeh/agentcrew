@@ -2,7 +2,7 @@ import type { EngineState } from '@shared/crew';
 import { NEEDS_YOU, STATUS_LABEL, type SessionView } from '@shared/types';
 import { bridge } from '../bridge';
 import { RobotFace } from '../robots/RobotFace';
-import { robotFor } from '../robots/roster';
+import { robotOf } from '../robots/roster';
 import { useCrew } from '../store';
 
 function subtitle(sessions: SessionView[]): string {
@@ -29,7 +29,7 @@ function engineNote(engine: EngineState): { text: string; tone: 'info' | 'warn' 
 }
 
 function SessionRow({ session, selected, onSelect }: { session: SessionView; selected: boolean; onSelect: () => void }) {
-  const robot = robotFor(session.robotId);
+  const robot = robotOf(session);
   const label = STATUS_LABEL[session.status];
   const task = session.task ?? 'No task assigned';
   return (

@@ -4,18 +4,21 @@ import { homedir } from 'node:os';
 import {
   BASE_LABEL,
   BRANCH_LABEL,
-  isDefaultCrew,
   isRosterRobot,
   REPO_LABEL,
   ROBOT_LABEL,
   ROSTER_ROBOTS,
   robotIdFor,
   sessionIdFor,
+  WORKSPACE_LABEL,
 } from '@shared/crew';
 import type { ApprovalDecision, CrewSnapshot, SessionView } from '@shared/types';
 import type { EngineService } from '../engine/EngineService';
-import { isWorktreeDirty, removeWorktree, repoInfo, worktreeChanges } from './git';
+import type { CrewStore } from './crewStore';
+import { folderChanges } from './folderChanges';
+import { isWorktreeDirty, removeWorktree, worktreeChanges } from './git';
 import { applyEvent, applyItem, emptyTranscript, type AgentTranscript } from './normalize';
+import type { Workspace } from './sessionSetup';
 import { deriveStatus, SPEAKING_WINDOW_MS } from './status';
 
 /** Model for new agents unless the New session dialog picks another. */
@@ -49,6 +52,9 @@ export interface SessionPlan {
   task: string;
   repoRoot: string;
   repoName: string;
+  /** A folder that isn't a git repo: the robot works in it directly, with no worktree or branch. */
+  plain: boolean;
+  /** Empty for a plain folder. */
   baseBranch: string;
   model: string;
   modeId: string;
@@ -63,6 +69,8 @@ interface RobotRecord {
   agentId: string;
   handle: any;
   cwd: string | null;
+  /** Works straight in a plain folder (no worktree). */
+  plain: boolean;
   repo?: string;
   branch?: string;
   base?: string;
@@ -88,6 +96,22 @@ export const branchSlug = (text: string) =>
     .slice(0, 32)
     .replace(/-+$/g, '') || 'task';
 
+const sleeping = (robotId: string, name: string): SessionView => ({
+  id: sessionIdFor(robotId),
+  robotId,
+  name,
+  task: null,
+  host: { name: 'this computer', kind: 'local' },
+  status: 'sleeping',
+  items: [],
+  model: DEFAULT_MODEL,
+});
+
+/** Your crew, all asleep: what the window shows before the engine is ready. */
+export function sleepingSnapshot(store: CrewStore): CrewSnapshot {
+  return { sessions: store.members().map((id) => sleeping(id, store.nameOf(id))) };
+}
+
 export class CrewManager {
   private records = new Map<string, RobotRecord>();
   private emitTimer: ReturnType<typeof setTimeout> | null = null;
@@ -97,8 +121,10 @@ export class CrewManager {
   constructor(
     private readonly engine: EngineService,
     private readonly publish: (snapshot: CrewSnapshot) => void,
-    /** Shows a native folder picker; returns the chosen folder or null. */
-    private readonly pickRepo: (robotName: string) => Promise<string | null>,
+    /** Who's in the crew and what they're called. */
+    private readonly store: CrewStore,
+    /** Shows a native folder picker (and, for a plain folder, the confirmation); null if you cancel. */
+    private readonly chooseWorkspace: (robotName: string) => Promise<Workspace | null>,
     private readonly notify: (message: string) => void,
     /** Model and permission mode for quick sessions (development builds may override them for tests). */
     private readonly agentDefaults: { model: string; modeId: string; engineDataDir: string },
@@ -121,34 +147,31 @@ export class CrewManager {
       const prev = newest.get(robotId);
       if (!prev || String(agent.updatedAt ?? '') > String(prev.updatedAt ?? '')) newest.set(robotId, agent);
     }
-    for (const [robotId, agent] of newest) await this.adopt(robotId, api.agents.ref(agent), agent, { loadHistory: true });
+    for (const [robotId, agent] of newest) {
+      // A robot with a live session is always in the crew.
+      this.store.add(robotId);
+      await this.adopt(robotId, api.agents.ref(agent), agent, { loadHistory: true });
+    }
     this.scheduleEmit();
   }
 
-  /** The default crew, plus any other roster robot that has a session, in roster order. */
+  /** Your crew (and any robot that has a session), in roster order. */
   snapshot(): CrewSnapshot {
     const now = Date.now();
-    const shown = ROSTER_ROBOTS.filter((r) => isDefaultCrew(r.id) || this.records.has(r.id));
+    const shown = ROSTER_ROBOTS.filter((r) => this.store.isMember(r.id) || this.records.has(r.id));
     const sessions: SessionView[] = shown.map(({ id: robotId }) => {
       const record = this.records.get(robotId);
-      if (!record) {
-        return {
-          id: sessionIdFor(robotId),
-          robotId,
-          task: null,
-          host: { name: 'this computer', kind: 'local' },
-          status: 'sleeping',
-          items: [],
-          model: DEFAULT_MODEL,
-        };
-      }
+      const name = this.store.nameOf(robotId);
+      if (!record) return sleeping(robotId, name);
       return {
         id: sessionIdFor(robotId),
         robotId,
+        name,
         task: record.task,
         host: { name: 'this computer', kind: 'local' },
         repo: record.repo,
-        branch: record.branch,
+        branch: record.plain ? undefined : record.branch,
+        workspace: record.plain ? 'folder' : 'worktree',
         status: deriveStatus({
           hasAgent: true,
           agentStatus: record.agentStatus,
@@ -171,6 +194,15 @@ export class CrewManager {
 
   hasSession(robotId: string): boolean {
     return this.records.has(robotId);
+  }
+
+  nameOf(robotId: string): string {
+    return this.store.nameOf(robotId);
+  }
+
+  /** The robots working straight in this plain folder (they'd share its files with a new one). */
+  robotsWorkingIn(folder: string): string[] {
+    return [...this.records.values()].filter((r) => r.plain && r.cwd === folder).map((r) => this.nameOf(r.robotId));
   }
 
   /** The robot's worktree folder, for Open folder. */
@@ -196,7 +228,7 @@ export class CrewManager {
     await Promise.all(
       [...this.records.values()]
         .filter((r) => !r.transcript.pendingApproval && !r.paused)
-        .map((r) => r.handle.send(text).catch((error: unknown) => this.notify(`${r.robotId}: ${String(error)}`))),
+        .map((r) => r.handle.send(text).catch((error: unknown) => this.notify(`${this.nameOf(r.robotId)}: ${String(error)}`))),
     );
   }
 
@@ -232,39 +264,89 @@ export class CrewManager {
     if (record) await record.handle.send('Please try again.');
   }
 
-  /** The robot's changes against its base branch. */
+  /** The robot's changes against its base branch; in a plain folder, the edits it made with its file tools. */
   async changes(sessionId: string): Promise<string> {
     const record = this.records.get(robotIdFor(sessionId));
     if (!record?.cwd) return 'This robot has no worktree yet.';
+    if (record.plain) return folderChanges(record.transcript.items, record.repo ?? 'This folder');
     return worktreeChanges(record.cwd, record.base ?? null);
   }
 
-  /** What archiving would leave behind, for the confirmation dialog. */
-  async archivePreview(sessionId: string): Promise<{ name: string; worktree: string | null; branch?: string; dirty: boolean } | null> {
-    const record = this.records.get(robotIdFor(sessionId));
-    if (!record) return null;
-    const name = ROSTER_ROBOTS.find((r) => r.id === record.robotId)?.name ?? record.robotId;
-    const dirty = record.cwd ? await isWorktreeDirty(record.cwd) : false;
-    return { name, worktree: record.cwd, branch: record.branch, dirty };
+  /**
+   * What archiving or deleting would leave behind, for the confirmation dialog: the robot's worktree (null in a
+   * plain folder, which is never removed), its branch, and whether the worktree has uncommitted changes.
+   */
+  async sessionPreview(sessionId: string): Promise<{
+    name: string;
+    hasSession: boolean;
+    worktree: string | null;
+    folder: string | null;
+    branch?: string;
+    dirty: boolean;
+  }> {
+    const robotId = robotIdFor(sessionId);
+    const record = this.records.get(robotId);
+    const name = this.nameOf(robotId);
+    if (!record) return { name, hasSession: false, worktree: null, folder: null, dirty: false };
+    const worktree = record.plain ? null : record.cwd;
+    const dirty = worktree ? await isWorktreeDirty(worktree) : false;
+    return { name, hasSession: true, worktree, folder: record.cwd, branch: record.plain ? undefined : record.branch, dirty };
   }
 
   /** Archives the robot's agent and removes its worktree (the branch stays). The robot goes back to sleep. */
   async archive(sessionId: string, options: { removeWorktree: boolean; force: boolean }): Promise<void> {
+    const record = this.records.get(robotIdFor(sessionId));
+    if (!record) return;
+    await this.endSession(record, 'archive', options);
+  }
+
+  /**
+   * Deletes the robot from the crew: its agent and conversation are deleted from the engine, and its worktree is
+   * removed if you chose that (its branch stays). A plain folder is never touched. Its name goes back to the roster's.
+   */
+  async remove(sessionId: string, options: { removeWorktree: boolean; force: boolean }): Promise<void> {
     const robotId = robotIdFor(sessionId);
     const record = this.records.get(robotId);
-    if (!record) return;
-    if (record.transcript.pendingApproval || deriveStatus({ hasAgent: true, agentStatus: record.agentStatus, transcript: record.transcript, paused: false, now: Date.now() }) === 'thinking') {
+    if (record) await this.endSession(record, 'delete', options);
+    this.store.remove(robotId);
+    this.scheduleEmit();
+  }
+
+  /** Gives the robot a new name (an empty one gives it back its roster name). */
+  rename(sessionId: string, name: string): void {
+    const robotId = robotIdFor(sessionId);
+    if (!this.store.isMember(robotId) && !this.records.has(robotId)) throw new Error("That robot isn't in your crew.");
+    this.store.add(robotId);
+    this.store.rename(robotId, name);
+    this.scheduleEmit();
+  }
+
+  private async endSession(
+    record: RobotRecord,
+    how: 'archive' | 'delete',
+    options: { removeWorktree: boolean; force: boolean },
+  ): Promise<void> {
+    const status = deriveStatus({ hasAgent: true, agentStatus: record.agentStatus, transcript: record.transcript, paused: false, now: Date.now() });
+    if (record.transcript.pendingApproval || status === 'thinking' || status === 'speaking') {
       await this.engine.client?.cancelAgent(record.agentId).catch(() => {});
     }
-    await record.handle.archive();
+    if (how === 'delete') {
+      const client = this.engine.client;
+      if (!client) throw new Error('The engine is not running.');
+      await client.deleteAgent(record.agentId);
+    } else {
+      await record.handle.archive();
+    }
     record.unsubscribe?.();
-    this.records.delete(robotId);
+    this.records.delete(record.robotId);
+    clearTimeout(this.speakingTimers.get(record.robotId));
     this.scheduleEmit();
-    if (options.removeWorktree && record.cwd) {
+    if (options.removeWorktree && record.cwd && !record.plain) {
       try {
         await removeWorktree(record.cwd, options.force);
       } catch (error) {
-        this.notify(`The session is archived, but its worktree was left in place: ${String(error instanceof Error ? error.message : error)}`);
+        const done = how === 'delete' ? `${this.nameOf(record.robotId)} is deleted` : 'The session is archived';
+        this.notify(`${done}, but its worktree was left in place: ${String(error instanceof Error ? error.message : error)}`);
       }
     }
   }
@@ -281,7 +363,7 @@ export class CrewManager {
     if (!api) throw new Error('The engine is not running.');
     if (this.records.has(plan.robotId)) throw new Error('That robot already has a session.');
     const task = firstLine(plan.task);
-    const branch = `crew-${plan.robotId}-${branchSlug(task)}`;
+    const branch = plan.plain ? undefined : `crew-${plan.robotId}-${branchSlug(task)}`;
     const options: Record<string, unknown> = {
       settings: {
         permissions: {
@@ -296,42 +378,47 @@ export class CrewManager {
       config: { provider: `claude/${plan.model}`, modeId: plan.modeId, options },
       cwd: plan.repoRoot,
       title: task,
-      labels: {
-        [ROBOT_LABEL]: plan.robotId,
-        [BASE_LABEL]: plan.baseBranch,
-        [BRANCH_LABEL]: branch,
-        [REPO_LABEL]: plan.repoName,
-      },
-      worktree: { mode: 'branch-off', newBranch: branch, base: plan.baseBranch },
+      labels: branch
+        ? {
+            [ROBOT_LABEL]: plan.robotId,
+            [BASE_LABEL]: plan.baseBranch,
+            [BRANCH_LABEL]: branch,
+            [REPO_LABEL]: plan.repoName,
+          }
+        : { [ROBOT_LABEL]: plan.robotId, [REPO_LABEL]: plan.repoName, [WORKSPACE_LABEL]: 'folder' },
+      // A plain folder gets no worktree: the robot works in it directly.
+      ...(branch ? { worktree: { mode: 'branch-off', newBranch: branch, base: plan.baseBranch } } : {}),
       prompt: plan.task,
     });
+    this.store.add(plan.robotId);
     await this.adopt(plan.robotId, handle, handle.current?.() ?? null, {
       loadHistory: true,
       repo: plan.repoName,
       branch,
-      base: plan.baseBranch,
+      base: plan.plain ? undefined : plan.baseBranch,
+      plain: plan.plain,
     });
   }
 
   // ---------- internals ----------
 
-  /** A task typed straight to a sleeping robot: pick a repo, everything else default. */
+  /** A task typed straight to a sleeping robot: pick a folder, everything else default. */
   private async quickSession(robotId: string, text: string): Promise<void> {
-    const robot = ROSTER_ROBOTS.find((r) => r.id === robotId);
-    if (!robot) throw new Error(`Unknown robot ${robotId}`);
-    const folder = await this.pickRepo(robot.name);
-    if (!folder) return;
-    const repo = await repoInfo(folder);
-    if (!repo) {
-      this.notify(`${folder} isn't a git repository with at least one commit, so ${robot.name} can't get its own worktree there.`);
-      return;
-    }
+    if (!isRosterRobot(robotId)) throw new Error(`Unknown robot ${robotId}`);
+    const ws = await this.chooseWorkspace(this.nameOf(robotId));
+    if (!ws) return;
+    const repo = ws.repo;
     await this.startSession({
       robotId,
       task: text,
-      repoRoot: repo.root,
-      repoName: repo.name,
-      baseBranch: repo.currentBranch && repo.currentBranch !== 'HEAD' ? repo.currentBranch : (repo.branches[0] ?? 'HEAD'),
+      repoRoot: ws.root,
+      repoName: ws.name,
+      plain: !repo,
+      baseBranch: !repo
+        ? ''
+        : repo.currentBranch && repo.currentBranch !== 'HEAD'
+          ? repo.currentBranch
+          : (repo.branches[0] ?? 'HEAD'),
       model: this.agentDefaults.model,
       modeId: this.agentDefaults.modeId,
       extraFolders: [],
@@ -344,7 +431,7 @@ export class CrewManager {
     robotId: string,
     handle: any,
     agent: any,
-    options: { loadHistory: boolean; repo?: string; branch?: string; base?: string },
+    options: { loadHistory: boolean; repo?: string; branch?: string; base?: string; plain?: boolean },
   ): Promise<void> {
     this.records.get(robotId)?.unsubscribe?.();
     const labels = agent?.labels ?? {};
@@ -354,6 +441,7 @@ export class CrewManager {
       agentId: handle.id,
       handle,
       cwd,
+      plain: options.plain ?? labels[WORKSPACE_LABEL] === 'folder',
       repo: options.repo ?? labels[REPO_LABEL] ?? undefined,
       branch: options.branch ?? labels[BRANCH_LABEL] ?? undefined,
       base: options.base ?? labels[BASE_LABEL] ?? undefined,
@@ -381,7 +469,7 @@ export class CrewManager {
         }
         record.transcript = transcript;
       } catch (error) {
-        this.notify(`Couldn't load ${robotId}'s history: ${String(error)}`);
+        this.notify(`Couldn't load ${this.nameOf(robotId)}'s history: ${String(error)}`);
       }
     }
 
@@ -408,6 +496,7 @@ export class CrewManager {
       repo: record.repo,
       branch: record.branch,
       base: record.base,
+      plain: record.plain,
     });
   }
 

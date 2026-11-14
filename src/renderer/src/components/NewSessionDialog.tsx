@@ -10,7 +10,7 @@ import {
 } from '@shared/crew';
 import { bridge } from '../bridge';
 import { RobotFace } from '../robots/RobotFace';
-import { robotFor } from '../robots/roster';
+import { robotFor, type Robot } from '../robots/roster';
 import { useCrew } from '../store';
 import { Modal } from './Modal';
 import { freeRobotIds, readRules } from './newSession';
@@ -23,6 +23,12 @@ export function NewSessionDialog({ initialRobotId, onClose }: { initialRobotId?:
   const sessions = useCrew((s) => s.sessions);
   const select = useCrew((s) => s.select);
   const free = useMemo(() => freeRobotIds(sessions), [sessions]);
+  /** A robot under the name you gave it (robots outside your crew have their roster names). */
+  const named = (id: string): Robot => {
+    const robot = robotFor(id);
+    const name = sessions.find((s) => s.robotId === id)?.name;
+    return name ? { ...robot, name } : robot;
+  };
 
   const [robotId, setRobotId] = useState(() =>
     initialRobotId && free.includes(initialRobotId) ? initialRobotId : (free[0] ?? ''),
@@ -59,12 +65,18 @@ export function NewSessionDialog({ initialRobotId, onClose }: { initialRobotId?:
     };
   }, []);
 
-  const robot = robotId ? robotFor(robotId) : null;
+  const robot = robotId ? named(robotId) : null;
   const { rules, invalid } = readRules(rulesText);
   const mode = MODES.find((m) => m.id === modeId);
   const extras = folders.length + rules.length + (trust ? 1 : 0);
   const ready =
-    !!robot && !!task.trim() && !!repo && !!base && !!model && !invalid.length && rules.length <= MAX_ALLOW_RULES;
+    !!robot &&
+    !!task.trim() &&
+    !!repo &&
+    (!repo.git || !!base) &&
+    !!model &&
+    !invalid.length &&
+    rules.length <= MAX_ALLOW_RULES;
 
   const run = async (kind: Exclude<Busy, null>, action: () => Promise<void>) => {
     setBusy(kind);
@@ -135,7 +147,7 @@ export function NewSessionDialog({ initialRobotId, onClose }: { initialRobotId?:
             {free.length ? (
               <div className="ns-robots" role="radiogroup" aria-label="Robot">
                 {free.map((id) => {
-                  const r = robotFor(id);
+                  const r = named(id);
                   const on = id === robotId;
                   return (
                     <button
@@ -154,7 +166,7 @@ export function NewSessionDialog({ initialRobotId, onClose }: { initialRobotId?:
                 })}
               </div>
             ) : (
-              <p className="ns-hint">Every robot has a session. Archive one to free it up.</p>
+              <p className="ns-hint">Every robot has a session. Archive or delete one to free it up.</p>
             )}
           </fieldset>
 
@@ -180,7 +192,7 @@ export function NewSessionDialog({ initialRobotId, onClose }: { initialRobotId?:
           <div className="ns-pair">
             <div className="ns-field">
               <span className="ns-label" id="ns-repo-label">
-                Repo
+                Project folder
               </span>
               <button
                 type="button"
@@ -197,7 +209,7 @@ export function NewSessionDialog({ initialRobotId, onClose }: { initialRobotId?:
                     </span>
                   </>
                 ) : (
-                  <span className="ns-placeholder">{busy === 'repo' ? 'Choosing…' : 'Choose a repo…'}</span>
+                  <span className="ns-placeholder">{busy === 'repo' ? 'Choosing…' : 'Choose a folder…'}</span>
                 )}
               </button>
             </div>
@@ -209,8 +221,9 @@ export function NewSessionDialog({ initialRobotId, onClose }: { initialRobotId?:
                 disabled={!repo || !repo.branches.length}
                 onChange={(e) => setBase(e.target.value)}
               >
-                {!repo && <option value="">Choose a repo first</option>}
-                {repo && !repo.branches.length && <option value="">No branches</option>}
+                {!repo && <option value="">Choose a folder first</option>}
+                {repo && !repo.git && <option value="">None: not a git repo</option>}
+                {repo?.git && !repo.branches.length && <option value="">No branches</option>}
                 {repo?.branches.map((b) => (
                   <option key={b} value={b}>
                     {b}
@@ -219,6 +232,13 @@ export function NewSessionDialog({ initialRobotId, onClose }: { initialRobotId?:
               </select>
             </label>
           </div>
+
+          {repo && !repo.git && (
+            <p className="ns-hint ns-in-place">
+              {robot?.name ?? 'The robot'} works directly in this folder and changes your files as it goes: there's no
+              branch to review first. Make it a git repo if you want that.
+            </p>
+          )}
 
           <div className="ns-pair">
             <label className="ns-field">
@@ -282,7 +302,7 @@ export function NewSessionDialog({ initialRobotId, onClose }: { initialRobotId?:
               >
                 + Add folder
               </button>
-              <p className="ns-hint">Folders outside the repo the robot may read and change.</p>
+              <p className="ns-hint">Folders outside the project the robot may read and change.</p>
             </div>
 
             <label className="ns-field">
@@ -308,7 +328,9 @@ export function NewSessionDialog({ initialRobotId, onClose }: { initialRobotId?:
             <label className="ns-check">
               <input type="checkbox" checked={trust} onChange={(e) => setTrust(e.target.checked)} />
               <span>
-                <span className="ns-check-title">Trust this repo's Claude settings</span>
+                <span className="ns-check-title">
+                  Trust this {repo && !repo.git ? 'folder' : 'repo'}'s Claude settings
+                </span>
                 <span className="ns-hint">
                   Loads its CLAUDE.md and .claude settings, hooks and allow rules included. Leave off for repos you
                   didn't write.

@@ -32,6 +32,8 @@ interface CrewState {
   engine: EngineState;
   notice: string | null;
   dialog: Dialog | null;
+  /** The session whose robot is being renamed in the header. */
+  renamingId: string | null;
   setSessions(sessions: SessionView[]): void;
   select(id: string): void;
   setBroadcast(on: boolean): void;
@@ -40,6 +42,7 @@ interface CrewState {
   setNotice(notice: string | null): void;
   openDialog(dialog: Dialog): void;
   closeDialog(): void;
+  setRenaming(id: string | null): void;
 }
 
 export const useCrew = create<CrewState>((set) => ({
@@ -51,6 +54,7 @@ export const useCrew = create<CrewState>((set) => ({
   engine: { state: 'starting' },
   notice: null,
   dialog: null,
+  renamingId: null,
   setEngine: (engine) => set({ engine }),
   setNotice: (notice) => set({ notice }),
   setSessions: (sessions) =>
@@ -71,4 +75,5 @@ export const useCrew = create<CrewState>((set) => ({
   setDraft: (sessionId, text) => set((state) => ({ drafts: { ...state.drafts, [sessionId]: text } })),
   openDialog: (dialog) => set({ dialog }),
   closeDialog: () => set({ dialog: null }),
+  setRenaming: (renamingId) => set({ renamingId }),
 }));

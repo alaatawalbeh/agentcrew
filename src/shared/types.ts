@@ -69,10 +69,14 @@ export interface PendingApproval {
 export interface SessionView {
   id: string;
   robotId: string;
+  /** The robot's name: its roster name, or the one you gave it. */
+  name: string;
   task: string | null;
   host: HostRef;
   repo?: string;
   branch?: string;
+  /** "folder": the robot works straight in a folder that isn't a git repo, with no worktree or branch. */
+  workspace?: 'worktree' | 'folder';
   status: Status;
   items: TranscriptItem[];
   pendingApproval?: PendingApproval;

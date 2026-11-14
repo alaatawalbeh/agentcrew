@@ -1309,3 +1309,126 @@ select.ns-input option {
 .changes-note.warn {
   color: var(--status-stuck);
 }
+
+/* ---------- rename and delete ---------- */
+
+.name-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.name-line .header-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: text;
+}
+
+/* The pencil shows on hover or focus, so the header stays as quiet as the design. */
+.rename-btn {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.header:hover .rename-btn,
+.rename-btn:focus-visible {
+  opacity: 1;
+}
+
+.rename {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rename-input {
+  width: 15em;
+  max-width: 100%;
+  height: 26px;
+  margin: -2px 0 -2px -7px;
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.rename-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.rename-input[aria-invalid='true'] {
+  border-color: var(--status-stuck);
+}
+
+.rename-error {
+  font-size: 12px;
+  line-height: 15px;
+  color: var(--status-stuck);
+}
+
+.icon-btn.danger:hover {
+  border-color: color-mix(in srgb, var(--status-stuck) 55%, transparent);
+  color: var(--status-stuck);
+}
+
+.ns-in-place {
+  margin: -6px 0 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--status-approval) 35%, transparent);
+  border-radius: 8px;
+  color: var(--text-dim);
+}
+
+.main-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-action {
+  margin-top: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rename-btn {
+    transition: none;
+  }
+}
+
+/* ---------- face gallery (browser preview only: ?scenario=faces) ---------- */
+
+.gallery {
+  height: 100vh;
+  overflow: auto;
+  padding: 24px 28px;
+}
+
+.gallery-title {
+  margin: 0 0 16px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.gallery-grid {
+  border-collapse: collapse;
+}
+
+.gallery-grid th {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  text-align: left;
+}
+
+.gallery-grid td {
+  padding: 6px 10px;
+}

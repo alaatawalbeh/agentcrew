@@ -26,6 +26,8 @@ export interface EngineClient {
   close(): Promise<void>;
   fetchAgents(options?: any): Promise<any>;
   cancelAgent(agentId: string): Promise<any>;
+  /** Deletes the agent and its records from the engine. */
+  deleteAgent(agentId: string): Promise<void>;
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 

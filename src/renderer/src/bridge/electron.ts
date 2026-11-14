@@ -14,6 +14,7 @@ const sleepingCrew = (): CrewSnapshot => ({
   sessions: CREW.map((robot) => ({
     id: sessionIdFor(robot.id),
     robotId: robot.id,
+    name: robot.name,
     task: null,
     host: { name: 'this computer', kind: 'local' },
     status: 'sleeping',
@@ -92,6 +93,15 @@ export function createElectronBridge(api: CrewPreloadApi): ElectronCrewBridge {
       } catch (error) {
         tell(cleanError(error));
         return { archived: false };
+      }
+    },
+    rename: (sessionId, name) => call(() => api.rename(sessionId, name) as Promise<void>),
+    remove: async (sessionId) => {
+      try {
+        return (await api.remove(sessionId)) as { removed: boolean };
+      } catch (error) {
+        tell(cleanError(error));
+        return { removed: false };
       }
     },
   };

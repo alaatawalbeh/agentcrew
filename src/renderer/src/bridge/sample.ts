@@ -1,7 +1,16 @@
 // In-memory crew for phase 1: no engine, no account. It plays short scripts (think, run a tool, stream a reply)
 // so the UI can be exercised end to end. Phase 2 replaces it with the Electron bridge behind the same interface.
 import type { CrewBridge } from '@shared/bridge';
-import { isDefaultCrew, ROSTER_ROBOTS, sessionIdFor, type FolderChoice, type ModelOption, type RepoChoice } from '@shared/crew';
+import {
+  defaultNameOf,
+  ROBOT_NAME,
+  ROSTER_ROBOTS,
+  sessionIdFor,
+  tidyName,
+  type FolderChoice,
+  type ModelOption,
+  type RepoChoice,
+} from '@shared/crew';
 import {
   isRunning,
   type ApprovalDecision,
@@ -31,8 +40,9 @@ export type SampleBridge = CrewBridge & {
 
 // What the New session dialog offers in the browser preview. The desktop app asks git and the engine instead.
 const SAMPLE_REPOS: Omit<RepoChoice, 'token'>[] = [
-  { path: '~/code/notes-app', name: 'notes-app', branches: ['main', 'develop', 'feat/search'], currentBranch: 'main' },
-  { path: '~/code/api-server', name: 'api-server', branches: ['main', 'feat/auth-v2'], currentBranch: 'main' },
+  { path: '~/code/notes-app', name: 'notes-app', git: true, branches: ['main', 'develop', 'feat/search'], currentBranch: 'main' },
+  { path: '~/sites/landing-page', name: 'landing-page', git: false, branches: [], currentBranch: '' },
+  { path: '~/code/api-server', name: 'api-server', git: true, branches: ['main', 'feat/auth-v2'], currentBranch: 'main' },
 ];
 const SAMPLE_FOLDERS = ['~/code/shared-docs', '~/code/design-tokens'];
 export const SAMPLE_MODELS: ModelOption[] = [
@@ -316,20 +326,23 @@ export function createSampleBridge(scenario: Scenario = 'full'): SampleBridge {
       if (!robot) throw new Error('Pick a robot.');
       const repo = repos.get(request.repoToken);
       if (!repo) throw new Error('Choose a repo first.');
-      const task = request.task.trim();
-      if (!task) throw new Error(`Tell ${robot.name} what to work on.`);
-      if (!repo.branches.includes(request.baseBranch)) throw new Error('Pick a base branch from the list.');
       const id = sessionIdFor(robot.id);
       const existing = get(id);
-      if (existing && existing.status !== 'sleeping') throw new Error(`${robot.name} already has a session.`);
+      const name = existing?.name ?? robot.name;
+      const task = request.task.trim();
+      if (!task) throw new Error(`Tell ${name} what to work on.`);
+      if (repo.git && !repo.branches.includes(request.baseBranch)) throw new Error('Pick a base branch from the list.');
+      if (existing && existing.status !== 'sleeping') throw new Error(`${name} already has a session.`);
       cancel(id);
       const view: SessionView = {
         id,
         robotId: robot.id,
+        name,
         task: firstLine(task),
         host: { name: 'this computer', kind: 'local' },
         repo: repo.name,
-        branch: `crew-${robot.id}-${slug(firstLine(task))}`,
+        branch: repo.git ? `crew-${robot.id}-${slug(firstLine(task))}` : undefined,
+        workspace: repo.git ? 'worktree' : 'folder',
         status: 'thinking',
         model: request.model,
         items: [{ kind: 'user', id: nextId('user'), text: task }],
@@ -343,8 +356,9 @@ export function createSampleBridge(scenario: Scenario = 'full'): SampleBridge {
     async changes(id) {
       const s = get(id);
       if (!s?.repo) return 'This robot has no worktree yet.';
+      const inPlace = s.workspace === 'folder';
       const edits = s.items.flatMap((item) => (item.kind === 'tool' && item.diff?.length ? [item] : []));
-      if (!edits.length) return 'No changes against main.';
+      if (!edits.length) return inPlace ? `No file edits yet.\n\n${s.repo} isn't a git repository.` : 'No changes against main.';
       return edits
         .map((edit) =>
           [
@@ -365,21 +379,44 @@ export function createSampleBridge(scenario: Scenario = 'full'): SampleBridge {
       const s = get(id);
       if (!s || s.status === 'sleeping') return { archived: false };
       cancel(id);
-      if (isDefaultCrew(s.robotId)) {
-        update(id, () => ({
-          id,
-          robotId: s.robotId,
-          task: null,
-          host: { name: 'this computer', kind: 'local' },
-          status: 'sleeping',
-          items: [],
-          model: s.model,
-        }));
-      } else {
-        sessions = sessions.filter((x) => x.id !== id);
-        emit();
-      }
+      // The robot stays in the crew, asleep.
+      update(id, () => ({
+        id,
+        robotId: s.robotId,
+        name: s.name,
+        task: null,
+        host: { name: 'this computer', kind: 'local' },
+        status: 'sleeping',
+        items: [],
+        model: s.model,
+      }));
       return { archived: true };
+    },
+
+    async rename(id, name) {
+      const s = get(id);
+      if (!s) throw new Error("That robot isn't in your crew.");
+      const wanted = tidyName(name) || defaultNameOf(s.robotId);
+      if (!ROBOT_NAME.test(wanted)) {
+        throw new Error('Use letters, numbers, spaces and - _ . \' in a name, starting with a letter or number.');
+      }
+      const same = (other: string) => other.toLowerCase() === wanted.toLowerCase();
+      const taken = sessions.find((x) => x.id !== id && same(x.name));
+      if (taken) throw new Error(`Another robot is already called ${taken.name}.`);
+      const rosterName = ROSTER_ROBOTS.find((r) => r.id !== s.robotId && same(r.name));
+      if (rosterName) throw new Error(`${rosterName.name} is another robot's name.`);
+      update(id, (x) => ({ ...x, name: wanted }));
+    },
+
+    async remove(id) {
+      const s = get(id);
+      if (!s) return { removed: false };
+      // The desktop app asks first in a native dialog; the preview just does it.
+      cancel(id);
+      sessions = sessions.filter((x) => x.id !== id);
+      emit();
+      tell(`${s.name} left the crew. Add it back from + New session.`);
+      return { removed: true };
     },
   };
 }

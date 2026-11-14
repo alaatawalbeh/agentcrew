@@ -9,6 +9,8 @@ declare module 'react' {
         state?: string;
         hue?: string;
         size?: number | string;
+        /** The robot's id: picks its personality. */
+        robot?: string;
       };
     }
   }

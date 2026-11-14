@@ -19,6 +19,8 @@ interface CrewPreloadApi {
   changes(sessionId: string): Promise<unknown>;
   openFolder(sessionId: string): Promise<unknown>;
   archive(sessionId: string): Promise<unknown>;
+  rename(sessionId: string, name: string): Promise<unknown>;
+  remove(sessionId: string): Promise<unknown>;
 }
 
 interface Window {

@@ -45,6 +45,9 @@ export function App() {
 
   const setEngine = useCrew((s) => s.setEngine);
   const setNotice = useCrew((s) => s.setNotice);
+  const renaming = useCrew((s) => s.renamingId !== null);
+  const setRenaming = useCrew((s) => s.setRenaming);
+  const crewSize = useCrew((s) => s.sessions.length);
 
   useEffect(() => bridge.subscribe((snapshot) => setSessions(snapshot.sessions)), [setSessions]);
   useEffect(() => onEngineState(setEngine), [setEngine]);
@@ -71,17 +74,23 @@ export function App() {
     };
   }, [setNotice]);
 
-  // Esc stops the selected agent's current turn (unless a dialog is open: then Esc closes the dialog).
+  // Esc stops the selected agent's current turn (unless a dialog is open: then Esc closes the dialog). F2 renames it.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || dialogOpen) return;
-      if (!session || session.pendingApproval || !isRunning(session.status)) return;
+      if (dialogOpen || renaming || event.defaultPrevented || !session) return;
+      if (event.key === 'F2') {
+        event.preventDefault();
+        setRenaming(session.id);
+        return;
+      }
+      if (event.key !== 'Escape') return;
+      if (session.pendingApproval || !isRunning(session.status)) return;
       event.preventDefault();
       void bridge.interrupt(session.id);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [session, dialogOpen]);
+  }, [session, dialogOpen, renaming, setRenaming]);
 
   // + New session starts with the selected robot when it's asleep.
   const onNewSession = () =>
@@ -90,7 +99,21 @@ export function App() {
   return (
     <div className="app">
       <Sidebar onNewSession={onNewSession} />
-      {session ? <MainPane session={session} /> : <main className="main" />}
+      {session ? (
+        <MainPane session={session} />
+      ) : (
+        <main className="main main-empty">
+          {crewSize === 0 && (
+            <div className="empty">
+              <p className="empty-title">Your crew is empty</p>
+              <p className="empty-detail">Add a robot with a task to get started.</p>
+              <button type="button" className="btn btn-primary empty-action" onClick={onNewSession}>
+                + New session
+              </button>
+            </div>
+          )}
+        </main>
+      )}
       <Dialogs />
     </div>
   );
